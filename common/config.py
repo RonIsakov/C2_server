@@ -19,3 +19,10 @@ COMMAND_TIMEOUT = 30        # Maximum time for command execution in seconds
 # Connection Configuration
 CONNECTION_RETRY_DELAY = 2  # Initial delay between connection attempts in seconds
 MAX_CONNECTION_RETRIES = 3  # Maximum number of connection retry attempts
+
+# Logging Configuration
+LOG_DIRECTORY = 'logs'                   # Directory for log files
+LOG_FILE_PREFIX = 'c2_server'            # Prefix for log filenames
+LOG_LEVEL = 'INFO'                       # Logging level (DEBUG, INFO, WARNING, ERROR)
+LOG_FORMAT = '%(asctime)s | %(levelname)-7s | %(message)s'
+LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'    # Timestamp format

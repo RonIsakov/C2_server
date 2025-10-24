@@ -12,9 +12,26 @@ This is for authorized security testing and educational purposes only.
 
 import socket
 import sys
+import uuid
+import logging
 from datetime import datetime
 from typing import Optional, Tuple
-from common import config, protocol
+from common import config, protocol, logger
+
+
+def generate_session_id() -> str:
+    """
+    Generate a unique session ID for tracking client sessions.
+
+    Format: SESSION-{timestamp}-{random_suffix}
+    Example: SESSION-20251024140933-a7f3
+
+    Returns:
+        str: Unique session identifier
+    """
+    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    random_suffix = uuid.uuid4().hex[:4]
+    return f"SESSION-{timestamp}-{random_suffix}"
 
 
 def display_banner():
@@ -30,17 +47,23 @@ def display_banner():
     print()
 
 
-def start_server() -> Optional[Tuple[socket.socket, socket.socket]]:
+def start_server() -> Optional[Tuple[socket.socket, socket.socket, str, logging.Logger]]:
     """
     Initialize and start the TCP server.
 
     Creates a TCP socket, binds to the configured host and port,
-    and waits for a single client connection.
+    waits for a single client connection, and sets up logging.
 
     Returns:
-        tuple: (server_socket, client_socket) if successful
+        tuple: (server_socket, client_socket, session_id, log) if successful
         None: If server startup or connection acceptance fails
     """
+    # Generate unique session ID
+    session_id = generate_session_id()
+
+    # Setup logger for this session
+    log = logger.setup_logger(session_id)
+
     try:
         # Create TCP socket
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -58,27 +81,35 @@ def start_server() -> Optional[Tuple[socket.socket, socket.socket]]:
         print("[*] Waiting for client connection...")
         print()
 
+        log.info(f"[{session_id}] Server started on {config.SERVER_HOST}:{config.SERVER_PORT}")
+
         # Accept a single client connection (blocking)
         client_socket, client_address = server_socket.accept()
 
         print(f"[+] Client connected from {client_address[0]}:{client_address[1]}")
         print()
 
-        return server_socket, client_socket
+        # LOG: Client connection event
+        log.info(f"[{session_id}] Client connected from {client_address[0]}:{client_address[1]}")
+
+        return server_socket, client_socket, session_id, log
 
     except PermissionError:
         print(f"[!] ERROR: Permission denied. Cannot bind to port {config.SERVER_PORT}")
         print("[!] Try using a port > 1024 or run with elevated privileges")
+        log.error(f"[{session_id}] Permission denied on port {config.SERVER_PORT}")
         return None
     except OSError as e:
         print(f"[!] ERROR: Failed to start server: {e}")
+        log.error(f"[{session_id}] Failed to start server: {e}")
         return None
     except Exception as e:
         print(f"[!] ERROR: Unexpected error during server startup: {e}")
+        log.error(f"[{session_id}] Unexpected error during startup: {e}")
         return None
 
 
-def handle_registration(client_socket: socket.socket) -> Optional[str]:
+def handle_registration(client_socket: socket.socket, session_id: str, log: logging.Logger) -> Optional[str]:
     """
     Handle client registration protocol.
 
@@ -87,6 +118,8 @@ def handle_registration(client_socket: socket.socket) -> Optional[str]:
 
     Args:
         client_socket: The connected client socket
+        session_id: The session identifier for logging
+        log: Logger instance for this session
 
     Returns:
         str: The client_id if registration successful
@@ -100,11 +133,16 @@ def handle_registration(client_socket: socket.socket) -> Optional[str]:
 
         if reg_message is None:
             print("[!] ERROR: Failed to receive registration message")
+            log.error(f"[{session_id}] Failed to receive registration message")
             return None
+
+        # LOG: Registration message received
+        log.info(f"[{session_id}] Registration message received: {reg_message}")
 
         # Validate message type
         if reg_message.get('type') != 'registration':
             print(f"[!] ERROR: Invalid message type: {reg_message.get('type')}")
+            log.error(f"[{session_id}] Invalid registration message type: {reg_message.get('type')}")
             return None
 
         # Extract client information
@@ -113,6 +151,7 @@ def handle_registration(client_socket: socket.socket) -> Optional[str]:
 
         if not client_id:
             print("[!] ERROR: Registration missing client_id")
+            log.error(f"[{session_id}] Registration missing client_id")
             return None
 
         # Display registration info
@@ -121,10 +160,14 @@ def handle_registration(client_socket: socket.socket) -> Optional[str]:
         print(f"    Timestamp: {timestamp}")
         print()
 
+        # LOG: Successful registration
+        log.info(f"[{session_id}] Client registered successfully: {client_id}")
+
         return client_id
 
     except Exception as e:
         print(f"[!] ERROR: Registration failed: {e}")
+        log.error(f"[{session_id}] Registration failed: {e}")
         return None
 
 
@@ -179,7 +222,7 @@ def display_help():
     print()
 
 
-def operator_interface(client_socket: socket.socket, client_id: str):
+def operator_interface(client_socket: socket.socket, client_id: str, session_id: str, log: logging.Logger):
     """
     Main operator interface loop.
 
@@ -191,6 +234,8 @@ def operator_interface(client_socket: socket.socket, client_id: str):
     Args:
         client_socket: The connected client socket
         client_id: The registered client identifier
+        session_id: The session identifier for logging
+        log: Logger instance for this session
     """
     print("=" * 60)
     print(f"OPERATOR INTERFACE - Connected to: {client_id}")
@@ -207,6 +252,7 @@ def operator_interface(client_socket: socket.socket, client_id: str):
                 # Handle Ctrl+D
                 print()
                 print("[*] EOF received. Exiting...")
+                log.info(f"[{session_id}] EOF received, exiting operator interface")
                 break
 
             # Handle empty input
@@ -216,6 +262,7 @@ def operator_interface(client_socket: socket.socket, client_id: str):
             # Handle special commands
             if command.lower() in ['exit', 'quit']:
                 print("[*] Closing connection and exiting...")
+                log.info(f"[{session_id}] Operator requested exit")
                 break
 
             if command.lower() == 'help':
@@ -228,11 +275,15 @@ def operator_interface(client_socket: socket.socket, client_id: str):
                 'command': command
             }
 
+            # LOG: Command sent
+            log.info(f"[{session_id}] Command sent to {client_id}: {command}")
+
             success = protocol.send_message(client_socket, command_message)
 
             if not success:
                 print("[!] ERROR: Failed to send command to client")
                 print("[!] Connection may be lost. Exiting...")
+                log.error(f"[{session_id}] Failed to send command to {client_id}")
                 break
 
             # Receive result from client
@@ -241,12 +292,18 @@ def operator_interface(client_socket: socket.socket, client_id: str):
             if result_message is None:
                 print("[!] ERROR: Failed to receive result from client")
                 print("[!] Connection may be lost. Exiting...")
+                log.error(f"[{session_id}] Failed to receive result from {client_id}")
                 break
 
             # Validate result message type
             if result_message.get('type') != 'result':
                 print(f"[!] WARNING: Unexpected message type: {result_message.get('type')}")
+                log.warning(f"[{session_id}] Unexpected message type from {client_id}: {result_message.get('type')}")
                 continue
+
+            # LOG: Response received
+            return_code = result_message.get('return_code', -1)
+            log.info(f"[{session_id}] Response received from {client_id} (return_code={return_code})")
 
             # Display results
             display_results(result_message)
@@ -255,8 +312,10 @@ def operator_interface(client_socket: socket.socket, client_id: str):
         # Handle Ctrl+C
         print()
         print("[*] Keyboard interrupt received. Exiting...")
+        log.info(f"[{session_id}] Keyboard interrupt received")
     except Exception as e:
         print(f"[!] ERROR: Unexpected error in operator interface: {e}")
+        log.error(f"[{session_id}] Unexpected error in operator interface: {e}")
 
 
 def main():
@@ -268,44 +327,50 @@ def main():
     # Display banner
     display_banner()
 
-    # Start server and wait for client
+    # Start server and wait for client (returns session_id and logger)
     result = start_server()
     if result is None:
         print("[!] Server startup failed. Exiting.")
         sys.exit(1)
 
-    server_socket, client_socket = result
+    server_socket, client_socket, session_id, log = result
 
     try:
         # Handle client registration
-        client_id = handle_registration(client_socket)
+        client_id = handle_registration(client_socket, session_id, log)
 
         if client_id is None:
             print("[!] Client registration failed. Exiting.")
+            log.error(f"[{session_id}] Client registration failed, shutting down")
             client_socket.close()
             server_socket.close()
             sys.exit(1)
 
         # Start operator interface
-        operator_interface(client_socket, client_id)
+        operator_interface(client_socket, client_id, session_id, log)
 
     finally:
         # Cleanup
         print()
         print("[*] Cleaning up...")
+        log.info(f"[{session_id}] Shutting down server")
+
         try:
             client_socket.close()
             print("[*] Client connection closed")
+            log.info(f"[{session_id}] Client connection closed")
         except:
             pass
 
         try:
             server_socket.close()
             print("[*] Server socket closed")
+            log.info(f"[{session_id}] Server socket closed")
         except:
             pass
 
         print("[*] Server shutdown complete")
+        log.info(f"[{session_id}] Server shutdown complete")
 
 
 if __name__ == '__main__':

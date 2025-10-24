@@ -102,8 +102,6 @@ def connect_to_server() -> Optional[socket.socket]:
 
 def send_registration(client_socket: socket.socket) -> bool:
     """
-    Send registration message to the server.
-
     Creates and sends a registration message containing the client's
     hostname and timestamp.
 
