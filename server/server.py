@@ -1,11 +1,15 @@
 """
 C2 Server Implementation
 
+Level 1 & 2: Basic single-client server with logging
+Level 3: Multi-client support with concurrent connections
+
 This module implements the command and control server that:
 - Accepts incoming client connections
 - Receives client registration
 - Provides an operator interface for sending commands
 - Displays command results from clients
+- Supports multiple concurrent clients (Level 3)
 
 This is for authorized security testing and educational purposes only.
 """
@@ -14,9 +18,12 @@ import socket
 import sys
 import uuid
 import logging
+import threading
+import queue
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from common import config, protocol, logger
+from .client import Client
 
 
 def generate_session_id() -> str:

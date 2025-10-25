@@ -20,6 +20,10 @@ COMMAND_TIMEOUT = 30        # Maximum time for command execution in seconds
 CONNECTION_RETRY_DELAY = 2  # Initial delay between connection attempts in seconds
 MAX_CONNECTION_RETRIES = 3  # Maximum number of connection retry attempts
 
+# Multi-Client Configuration (Level 3)
+MAX_CLIENTS = 50            # Maximum number of concurrent client connections
+CLIENT_TIMEOUT = 300        # Client inactivity timeout in seconds (5 minutes)
+
 # Logging Configuration
 LOG_DIRECTORY = 'logs'                   # Directory for log files
 LOG_FILE_PREFIX = 'c2_server'            # Prefix for log filenames
