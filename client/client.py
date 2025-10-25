@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+import ssl
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -58,10 +59,35 @@ def connect_to_server() -> Optional[socket.socket]:
             # Create TCP socket
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-            # Attempt connection
+            # --- START Level 4 Change ---
+            if config.TLS_ENABLED:
+                print("[*] TLS enabled. Wrapping socket...")
+                
+                # Create an SSL context
+                # We tell it to trust the server's certificate (TLS_CERTFILE)
+                ssl_context = ssl.create_default_context(
+                    cafile=config.TLS_CERTFILE
+                )
+
+                # Since we're testing on "localhost" but the cert CN is "localhost",
+                # we may need to adjust settings.
+                # This ensures we trust our self-signed cert.
+                if config.SERVER_HOST == '127.0.0.1':
+                    ssl_context.check_hostname = False
+                
+                # Wrap the socket before connecting
+                client_socket = ssl_context.wrap_socket(
+                    client_socket,
+                    server_hostname=config.SERVER_HOST
+                )
+            # --- END Level 4 Change ---
+
+            # Attempt connection (on the wrapped socket if TLS is on)
             client_socket.connect((config.SERVER_HOST, config.SERVER_PORT))
 
             print(f"[+] Connected successfully to {config.SERVER_HOST}:{config.SERVER_PORT}")
+            if config.TLS_ENABLED:
+                print(f"[*] TLS Cipher: {client_socket.cipher()[0]}")
             print()
 
             return client_socket
@@ -69,33 +95,35 @@ def connect_to_server() -> Optional[socket.socket]:
         except ConnectionRefusedError:
             print(f"[!] Connection refused. Server may not be running.")
             retry_count += 1
-
-            if retry_count <= config.MAX_CONNECTION_RETRIES:
-                print(f"[*] Retrying in {delay} seconds... (Attempt {retry_count}/{config.MAX_CONNECTION_RETRIES})")
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-            else:
-                print(f"[!] Maximum retry attempts ({config.MAX_CONNECTION_RETRIES}) reached.")
-                return None
-
+        
+        # --- START Level 4 Change ---
+        # Catch SSL errors (e.g., certificate not trusted, protocol mismatch)
+        except ssl.SSLError as e:
+            print(f"[!] ERROR: TLS/SSL connection failed: {e}")
+            print("[!] Make sure 'server.crt' is present and trusted.")
+            # Don't retry on SSL errors, it's a config problem
+            return None
+        # --- END Level 4 Change ---
+            
         except socket.gaierror:
             print(f"[!] ERROR: Cannot resolve hostname {config.SERVER_HOST}")
             return None
-
+        
         except OSError as e:
             print(f"[!] ERROR: Network error - {e}")
             retry_count += 1
 
-            if retry_count <= config.MAX_CONNECTION_RETRIES:
-                print(f"[*] Retrying in {delay} seconds... (Attempt {retry_count}/{config.MAX_CONNECTION_RETRIES})")
-                time.sleep(delay)
-                delay *= 2
-            else:
-                print(f"[!] Maximum retry attempts ({config.MAX_CONNECTION_RETRIES}) reached.")
-                return None
-
         except Exception as e:
             print(f"[!] ERROR: Unexpected error during connection - {e}")
+            return None
+
+        # Retry logic
+        if retry_count <= config.MAX_CONNECTION_RETRIES:
+            print(f"[*] Retrying in {delay} seconds... (Attempt {retry_count}/{config.MAX_CONNECTION_RETRIES})")
+            time.sleep(delay)
+            delay *= 2  # Exponential backoff
+        else:
+            print(f"[!] Maximum retry attempts ({config.MAX_CONNECTION_RETRIES}) reached.")
             return None
 
     return None

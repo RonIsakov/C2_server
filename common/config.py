@@ -30,3 +30,9 @@ LOG_FILE_PREFIX = 'c2_server'            # Prefix for log filenames
 LOG_LEVEL = 'INFO'                       # Logging level (DEBUG, INFO, WARNING, ERROR)
 LOG_FORMAT = '%(asctime)s | %(levelname)-7s | %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'    # Timestamp format
+
+# TLS Configuration (Level 4)
+TLS_ENABLED = True
+# Path to the server's certificate and key
+TLS_CERTFILE = 'server.crt'
+TLS_KEYFILE = 'server.key'

@@ -26,6 +26,7 @@ from typing import Optional, Dict
 from common import config, protocol, logger
 from server.session import ClientSession
 from server.session_manager import SessionManager
+import ssl
 
 
 def generate_session_id() -> str:
@@ -60,7 +61,9 @@ def connection_listener(
     server_socket: socket.socket,
     session_manager: SessionManager,
     main_logger: logging.Logger,
-    shutdown_event: threading.Event
+    shutdown_event: threading.Event,
+    ssl_context: Optional[ssl.SSLContext]
+    
 ):
     """
     Accept incoming client connections and spawn handler threads.
@@ -104,6 +107,16 @@ def connection_listener(
             except socket.timeout:
                 # No connection received, loop again
                 continue
+                        # Accept new connection
+            if ssl_context:
+                try:
+                    # Wrap the raw socket in an SSL socket
+                    client_socket = ssl_context.wrap_socket(client_socket, server_side=True)
+                    main_logger.info(f"[MAIN] TLS handshake successful for {client_address[0]}:{client_address[1]}")
+                except ssl.SSLError as e:
+                    main_logger.error(f"[MAIN] TLS handshake failed for {client_address[0]}:{client_address[1]}: {e}")
+                    client_socket.close()
+                    continue
 
             # Log the new connection
             main_logger.info(f"[MAIN] New connection from {client_address[0]}:{client_address[1]}")
@@ -633,6 +646,19 @@ def main():
         main_logger.error("[MAIN] Server startup failed")
         sys.exit(1)
 
+    ssl_context = None
+    if config.TLS_ENABLED:
+        try:
+            print("[*] TLS enabled. Loading certificate...")
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile=config.TLS_CERTFILE, keyfile=config.TLS_KEYFILE)
+            print("[+] Certificate loaded successfully")
+        except Exception as e:
+            print(f"[!] ERROR: Failed to load TLS certificate: {e}")
+            main_logger.error(f"[MAIN] Failed to load TLS: {e}")
+            server_socket.close()
+            sys.exit(1)
+
     # Create session manager
     session_manager = SessionManager()
     main_logger.info("[MAIN] Session manager initialized")
@@ -643,7 +669,7 @@ def main():
     # Start connection listener thread
     listener_thread = threading.Thread(
         target=connection_listener,
-        args=(server_socket, session_manager, main_logger, shutdown_event),
+        args=(server_socket, session_manager, main_logger, shutdown_event, ssl_context), 
         daemon=True,
         name="ConnectionListener"
     )
