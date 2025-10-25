@@ -16,7 +16,7 @@ from datetime import datetime
 from . import config
 
 
-def setup_logger(session_id: str) -> logging.Logger:
+def setup_logger(session_id: str, client_id: str = None) -> logging.Logger:
     """
     Setup a logger with dual output (console and file) for a specific session.
 
@@ -25,22 +25,26 @@ def setup_logger(session_id: str) -> logging.Logger:
     messages for tracking.
 
     Args:
-        session_id: Unique identifier for this session (e.g., SESSION-20251024-a7f3)
+        session_id: Unique identifier for this session (e.g., SESSION-20251024-a7f3 or MAIN)
+        client_id: Optional client identifier to include in log filename for easy recognition
 
     Returns:
         logging.Logger: Configured logger instance with session context
 
     Example:
-        >>> log = setup_logger("SESSION-20251024-a7f3")
+        >>> log = setup_logger("SESSION-20251024-a7f3", "LAPTOP-ABC")
         >>> log.info("Client connected")
         2025-10-24 14:09:33 | INFO    | [SESSION-20251024-a7f3] Client connected
     """
     # Create logs directory if it doesn't exist
     os.makedirs(config.LOG_DIRECTORY, exist_ok=True)
 
-    # Generate log filename with timestamp
+    # Generate log filename with timestamp and optional client_id
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_filename = f"{config.LOG_FILE_PREFIX}_{timestamp}.log"
+    if client_id:
+        log_filename = f"{config.LOG_FILE_PREFIX}_{client_id}_{timestamp}.log"
+    else:
+        log_filename = f"{config.LOG_FILE_PREFIX}_{session_id}_{timestamp}.log"
     log_path = os.path.join(config.LOG_DIRECTORY, log_filename)
 
     # Create logger with unique name per session
@@ -51,6 +55,12 @@ def setup_logger(session_id: str) -> logging.Logger:
     logger.setLevel(getattr(logging, config.LOG_LEVEL))
 
     # Clear any existing handlers to avoid duplicates
+    # Close existing handlers first to release file handles
+    for handler in logger.handlers[:]:
+        try:
+            handler.close()
+        except:
+            pass
     logger.handlers.clear()
 
     # Prevent propagation to root logger

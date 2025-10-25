@@ -8,5 +8,5 @@ echo.
 REM Set PYTHONPATH to current directory (project root)
 set PYTHONPATH=%~dp0
 
-REM Run the server
-py server\server.py
+REM Run the server as a module (enables proper imports)
+py -m server.server

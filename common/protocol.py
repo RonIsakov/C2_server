@@ -24,7 +24,6 @@ def recv_exactly(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
     data = b''  # Accumulator for received bytes
 
     while len(data) < num_bytes:
-        # Calculate how many bytes we still need
         remaining = num_bytes - len(data)
 
         try:
@@ -34,7 +33,6 @@ def recv_exactly(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
             if not chunk:
                 return None
 
-            # Append this chunk to our accumulated data
             data += chunk
 
         except socket.timeout:
