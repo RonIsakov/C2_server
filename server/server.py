@@ -287,9 +287,8 @@ def client_handler(
             log.error(f"[{session_id}] Registration failed, closing connection")
             return
 
-        # Now that we have the client_id, create a new logger with better naming
-        log = logger.setup_logger(session_id, client_id)
-        log.info(f"[{session_id}] Logger reinitialized with client_id: {client_id}")
+        # Continue using the same per-session logger (session_id-named file)
+        # to keep all session events in a single log file.
 
         # Create ClientSession object
         session = ClientSession(
