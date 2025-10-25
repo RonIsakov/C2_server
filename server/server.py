@@ -312,18 +312,6 @@ def operator_interface(client_socket: socket.socket, client_id: str, session_id:
             return_code = result_message.get('return_code', -1)
             log.info(f"[{session_id}] Response received from {client_id} (return_code={return_code})")
 
-            # LOG: Response content (stdout and stderr)
-            stdout = result_message.get('stdout', '')
-            stderr = result_message.get('stderr', '')
-
-            # Log stdout if present
-            if stdout.strip():
-                log.info(f"[{session_id}] STDOUT from {client_id}: {stdout.strip()}")
-
-            # Log stderr if present (use warning level for errors)
-            if stderr.strip():
-                log.warning(f"[{session_id}] STDERR from {client_id}: {stderr.strip()}")
-
             # Display results
             display_results(result_message)
 
