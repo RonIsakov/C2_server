@@ -52,6 +52,7 @@ Thumbs.db
 
 # C2 Server specific
 *.key
+*.crt
 *.pem
 *.cert
 sessions/
