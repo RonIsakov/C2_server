@@ -1,5 +1,6 @@
-# Claude planning file
+# Claude
 claude.md
+.claude
 
 # Python
 __pycache__/
@@ -57,3 +58,5 @@ sessions/
 
 #tests
 tests/
+
+

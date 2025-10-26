@@ -5,7 +5,7 @@ This module centralizes all configurable values for the C2 system
 
 
 # Network Configuration
-SERVER_HOST = '127.0.0.1'  # Server IP address (localhost for testing)
+SERVER_HOST = 'localhost'  # Server IP address (localhost for testing)
 SERVER_PORT = 4444          # Server listening port (common C2 port)
 
 # Protocol Configuration
@@ -32,7 +32,7 @@ LOG_FORMAT = '%(asctime)s | %(levelname)-7s | %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'    # Timestamp format
 
 # TLS Configuration (Level 4)
-TLS_ENABLED = True
+TLS_ENABLED = False
 # Path to the server's certificate and key
 TLS_CERTFILE = 'server.crt'
 TLS_KEYFILE = 'server.key'

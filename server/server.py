@@ -1,17 +1,12 @@
 """
 C2 Server Implementation
 
-Level 1 & 2: Basic single-client server with logging
-Level 3: Multi-client support with concurrent connections
-
 This module implements the command and control server that:
 - Accepts incoming client connections
 - Receives client registration
 - Provides an operator interface for sending commands
 - Displays command results from clients
 - Supports multiple concurrent clients (Level 3)
-
-This is for authorized security testing and educational purposes only.
 """
 
 import socket
@@ -55,7 +50,7 @@ def display_banner():
     print("C2 SERVER - Command and Control System")
     print("=" * 60)
     print(f"Listening on: {config.SERVER_HOST}:{config.SERVER_PORT}")
-    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Started at: {datetime.now().strftime(config.LOG_DATE_FORMAT)}")
     print("=" * 60)
     print()
 
@@ -87,10 +82,11 @@ def connection_listener(
     Returns:
         None (runs until shutdown_event is set)
     """
-    main_logger.info("[MAIN] Connection listener thread started")
-    print("[*] Connection listener started")
-    print("[*] Waiting for client connections...")
-    print()
+    with print_lock:
+        main_logger.info("[MAIN] Connection listener thread started")
+        print("[*] Connection listener started")
+        print("[*] Waiting for client connections...")
+        print()
 
     # Set socket timeout for responsive shutdown checking
     server_socket.settimeout(1.0)
@@ -110,15 +106,21 @@ def connection_listener(
             except socket.timeout:
                 # No connection received, loop again
                 continue
-                        # Accept new connection
+            # Handle TLS wrapping if enabled
             if ssl_context:
+                raw_socket = client_socket  # Preserve reference to original socket
                 try:
                     # Wrap the raw socket in an SSL socket
-                    client_socket = ssl_context.wrap_socket(client_socket, server_side=True)
+                    client_socket = ssl_context.wrap_socket(raw_socket, server_side=True)
                     main_logger.info(f"[MAIN] TLS handshake successful for {client_address[0]}:{client_address[1]}")
                 except ssl.SSLError as e:
                     main_logger.error(f"[MAIN] TLS handshake failed for {client_address[0]}:{client_address[1]}: {e}")
-                    client_socket.close()
+                    # Close the original socket properly to prevent resource leak
+                    try:
+                        raw_socket.shutdown(socket.SHUT_RDWR)
+                    except:
+                        pass
+                    raw_socket.close()
                     continue
 
             # Log the new connection
@@ -343,11 +345,11 @@ def client_handler(
                     'command': command
                 }
 
-                # LOG: Command sent
-                log.info(f"[{session_id}] Command sent to {client_id}: {command}")
-
                 # Send command to client
                 success = protocol.send_message(client_socket, command_message)
+
+                if success:
+                    log.info(f"[{session_id}] Command sent to {client_id}: {command}")
 
                 if not success:
                     log.error(f"[{session_id}] Failed to send command to {client_id}")
@@ -367,9 +369,33 @@ def client_handler(
                     log.warning(f"[{session_id}] Unexpected message type from {client_id}: {result_message.get('type')}")
                     continue
 
-                # LOG: Response received
+                # LOG: Response received - Extract all fields
+                command = result_message.get('command', 'unknown')
+                stdout = result_message.get('stdout', '')
+                stderr = result_message.get('stderr', '')
                 return_code = result_message.get('return_code', -1)
-                log.info(f"[{session_id}] Response received from {client_id} (return_code={return_code})")
+                client_timestamp = result_message.get('timestamp', 'unknown')
+
+                # Log command execution details
+                log.info(f"[{session_id}] Command executed: {command}")
+                log.info(f"[{session_id}] Return code: {return_code}")
+
+                # Log stdout (full output, no truncation)
+                if stdout:
+                    # Replace newlines with \n for single-line logging
+                    stdout_oneline = stdout.replace('\n', '\\n')
+                    log.info(f"[{session_id}] stdout: {stdout_oneline}")
+                else:
+                    log.info(f"[{session_id}] stdout: (empty)")
+
+                # Log stderr (full output, no truncation)
+                if stderr:
+                    stderr_oneline = stderr.replace('\n', '\\n')
+                    log.info(f"[{session_id}] stderr: {stderr_oneline}")
+                else:
+                    log.info(f"[{session_id}] stderr: (empty)")
+
+                log.info(f"[{session_id}] Client timestamp: {client_timestamp}")
 
                 # Update activity timestamp
                 session.update_activity()
@@ -396,6 +422,13 @@ def client_handler(
         if session:
             # Mark as disconnected
             session.connected = False
+
+            # Clear any pending commands to prevent memory leak
+            while not session.command_queue.empty():
+                try:
+                    session.command_queue.get_nowait()
+                except queue.Empty:
+                    break
 
             # Remove from session manager
             removed = session_manager.remove_session(session.session_id)

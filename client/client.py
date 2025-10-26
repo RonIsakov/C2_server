@@ -15,11 +15,12 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 import ssl
 from datetime import datetime
 from typing import Optional, Tuple
 
-# Import common modules (PYTHONPATH should include project root)
+# Import common modules
 from common import config, protocol
 
 
@@ -58,7 +59,7 @@ def connect_to_server() -> Optional[socket.socket]:
             # Create TCP socket
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-            # --- START Level 4 Change ---
+
             if config.TLS_ENABLED:
                 print("[*] TLS enabled. Wrapping socket...")
                 
@@ -68,18 +69,11 @@ def connect_to_server() -> Optional[socket.socket]:
                     cafile=config.TLS_CERTFILE
                 )
 
-                # Since we're testing on "localhost" but the cert CN is "localhost",
-                # we may need to adjust settings.
-                # This ensures we trust our self-signed cert.
-                if config.SERVER_HOST == '127.0.0.1':
-                    ssl_context.check_hostname = False
-                
                 # Wrap the socket before connecting
                 client_socket = ssl_context.wrap_socket(
                     client_socket,
                     server_hostname=config.SERVER_HOST
                 )
-            # --- END Level 4 Change ---
 
             # Attempt connection (on the wrapped socket if TLS is on)
             client_socket.connect((config.SERVER_HOST, config.SERVER_PORT))
@@ -95,14 +89,12 @@ def connect_to_server() -> Optional[socket.socket]:
             print(f"[!] Connection refused. Server may not be running.")
             retry_count += 1
         
-        # --- START Level 4 Change ---
+        
         # Catch SSL errors (e.g., certificate not trusted, protocol mismatch)
         except ssl.SSLError as e:
-            print(f"[!] ERROR: TLS/SSL connection failed: {e}")
+            print(f"[!] ERROR: TLS connection failed: {e}")
             print("[!] Make sure 'server.crt' is present and trusted.")
-            # Don't retry on SSL errors, it's a config problem
             return None
-        # --- END Level 4 Change ---
             
         except socket.gaierror:
             print(f"[!] ERROR: Cannot resolve hostname {config.SERVER_HOST}")
@@ -120,7 +112,7 @@ def connect_to_server() -> Optional[socket.socket]:
         if retry_count <= config.MAX_CONNECTION_RETRIES:
             print(f"[*] Retrying in {delay} seconds... (Attempt {retry_count}/{config.MAX_CONNECTION_RETRIES})")
             time.sleep(delay)
-            delay *= 2  # Exponential backoff
+            delay *= 2 
         else:
             print(f"[!] Maximum retry attempts ({config.MAX_CONNECTION_RETRIES}) reached.")
             return None
@@ -140,7 +132,7 @@ def send_registration(client_socket: socket.socket) -> bool:
         bool: True if registration sent successfully, False otherwise
     """
     try:
-        # Get client identifier (hostname only)
+        # Get client identifier (hostname)
         client_id = socket.gethostname()
 
         # Create registration message
