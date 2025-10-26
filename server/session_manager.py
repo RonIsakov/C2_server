@@ -50,57 +50,53 @@ class SessionManager:
         Add a new client session to the manager.
 
         Thread-safe operation that adds a session to the internal dictionary.
-        Prevents duplicate client_ids by checking before adding.
+        Uses session_id as the primary key (always unique).
+        Multiple sessions with the same client_id are allowed.
 
         Args:
             session: ClientSession object to add
 
         Returns:
-            bool: True if session was added successfully
-                  False if client_id already exists
+            bool: Always True (session_id is unique by design)
         """
         with self._lock:
-            # Check if client_id already exists
-            if session.client_id in self._sessions:
-                return False
-
-            # Add the session
-            self._sessions[session.client_id] = session
+            # Use session_id as key (always unique, no collision possible)
+            self._sessions[session.session_id] = session
             return True
 
-    def remove_session(self, client_id: str) -> Optional[ClientSession]:
+    def remove_session(self, session_id: str) -> Optional[ClientSession]:
         """
-        Remove and return a session by client_id.
+        Remove and return a session by session_id.
 
         Thread-safe operation that removes a session from the dictionary
-        and returns it. If the client_id doesn't exist, returns None.
+        and returns it. If the session_id doesn't exist, returns None.
 
         Args:
-            client_id: The client identifier to remove
+            session_id: The session identifier to remove
 
         Returns:
             ClientSession: The removed session if found
-            None: If client_id doesn't exist
+            None: If session_id doesn't exist
         """
         with self._lock:
-            return self._sessions.pop(client_id, None)
+            return self._sessions.pop(session_id, None)
 
-    def get_session(self, client_id: str) -> Optional[ClientSession]:
+    def get_session_by_session_id(self, session_id: str) -> Optional[ClientSession]:
         """
-        Get a session by client_id (read-only access).
+        Get a session by session_id (read-only access).
 
         Thread-safe operation that retrieves a session without removing it.
         Returns a reference to the actual session object (not a copy).
 
         Args:
-            client_id: The client identifier to look up
+            session_id: The session identifier to look up
 
         Returns:
             ClientSession: The session if found
-            None: If client_id doesn't exist
+            None: If session_id doesn't exist
         """
         with self._lock:
-            return self._sessions.get(client_id)
+            return self._sessions.get(session_id)
 
     def list_sessions(self) -> List[dict]:
         """
@@ -137,7 +133,7 @@ class SessionManager:
         with self._lock:
             return len(self._sessions)
 
-    def mark_disconnected(self, client_id: str) -> bool:
+    def mark_disconnected(self, session_id: str) -> bool:
         """
         Mark a session as disconnected without removing it.
 
@@ -146,28 +142,28 @@ class SessionManager:
         disconnected before removing the session.
 
         Args:
-            client_id: The client identifier to mark as disconnected
+            session_id: The session identifier to mark as disconnected
 
         Returns:
             bool: True if session was found and marked
-                  False if client_id doesn't exist
+                  False if session_id doesn't exist
         """
         with self._lock:
-            session = self._sessions.get(client_id)
+            session = self._sessions.get(session_id)
             if session:
                 session.connected = False
                 return True
             return False
 
-    def get_all_client_ids(self) -> List[str]:
+    def get_all_session_ids(self) -> List[str]:
         """
-        Get a list of all client IDs currently in the manager.
+        Get a list of all session IDs currently in the manager.
 
-        Thread-safe operation that returns a snapshot of all client_ids.
+        Thread-safe operation that returns a snapshot of all session_ids.
         Useful for iteration or batch operations.
 
         Returns:
-            List[str]: List of client identifiers
+            List[str]: List of session identifiers
         """
         with self._lock:
             return list(self._sessions.keys())

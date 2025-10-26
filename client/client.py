@@ -15,7 +15,6 @@ import socket
 import subprocess
 import sys
 import time
-import uuid
 import ssl
 from datetime import datetime
 from typing import Optional, Tuple
@@ -141,10 +140,8 @@ def send_registration(client_socket: socket.socket) -> bool:
         bool: True if registration sent successfully, False otherwise
     """
     try:
-        # Get client identifier (hostname + unique suffix for multi-client support)
-        hostname = socket.gethostname()
-        unique_suffix = uuid.uuid4().hex[:4]  # 4-character random hex (e.g., 'a1b2')
-        client_id = f"{hostname}-{unique_suffix}"
+        # Get client identifier (hostname only)
+        client_id = socket.gethostname()
 
         # Create registration message
         registration_message = {
