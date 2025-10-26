@@ -5,7 +5,7 @@ This module centralizes all configurable values for the C2 system
 
 
 # Network Configuration
-SERVER_HOST = 'localhost'  # Server IP address (localhost for testing)
+SERVER_HOST = 'localhost'  # Server IP address
 SERVER_PORT = 4444          # Server listening port (common C2 port)
 
 # Protocol Configuration
@@ -36,3 +36,8 @@ TLS_ENABLED = False
 # Path to the server's certificate and key
 TLS_CERTFILE = 'server.crt'
 TLS_KEYFILE = 'server.key'
+
+# Authentication Configuration (Level 4)
+AUTH_ENABLED = True                                    # Enable/disable token authentication
+AUTH_TOKEN = "secret_c2_token_12345"                  # Shared secret token
+# Production: I would use cryptographically random token

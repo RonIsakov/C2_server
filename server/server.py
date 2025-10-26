@@ -239,6 +239,22 @@ def handle_registration(client_socket: socket.socket, session_id: str, log: logg
         client_id = reg_message.get('client_id')
         timestamp = reg_message.get('timestamp')
 
+        # Validate authentication token
+        if config.AUTH_ENABLED:
+            provided_token = reg_message.get('auth_token')
+
+            if not provided_token:
+                print("[!] ERROR: Registration missing auth_token")
+                log.error(f"[{session_id}] Authentication failed: no token provided")
+                return None
+
+            if provided_token != config.AUTH_TOKEN:
+                print("[!] ERROR: Invalid authentication token")
+                log.error(f"[{session_id}] Authentication failed: invalid token")
+                return None
+
+            log.info(f"[{session_id}] Authentication successful")
+
         if not client_id:
             print("[!] ERROR: Registration missing client_id")
             log.error(f"[{session_id}] Registration missing client_id")
@@ -248,6 +264,8 @@ def handle_registration(client_socket: socket.socket, session_id: str, log: logg
         with print_lock:
             print(f"[+] Client registered successfully!")
             print(f"    Client ID: {client_id}")
+            if config.AUTH_ENABLED:
+                print(f"    Authenticated: YES")
             print(f"    Timestamp: {timestamp}")
             print()
 

